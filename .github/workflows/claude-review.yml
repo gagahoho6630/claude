@@ -1,0 +1,172 @@
+name: Claude PR Review
+
+on:
+  pull_request:
+    types: [synchronize]   # PR에 새 커밋이 push될 때만 실행
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # base branch diff를 위해 전체 히스토리 필요
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          pip install anthropic pytest pytest-cov
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+
+      # ── 테스트 & 커버리지 ───────────────────────────────────────────────
+      - name: Run tests with coverage
+        id: cov
+        run: |
+          pytest --cov=. --cov-report=term-missing --cov-report=json -q \
+            2>&1 | tee coverage_output.txt || true
+
+          TOTAL=$(python -c "
+          import json, sys
+          try:
+              d = json.load(open('coverage.json'))
+              print(int(d['totals']['percent_covered']))
+          except Exception:
+              print('N/A')
+          ")
+          echo "total=$TOTAL" >> "$GITHUB_OUTPUT"
+        continue-on-error: true
+
+      # ── diff 추출 (소스 파일만) ─────────────────────────────────────────
+      - name: Get PR diff
+        run: |
+          git diff origin/${{ github.base_ref }}...HEAD \
+            -- '*.py' '*.js' '*.ts' '*.tsx' '*.go' '*.java' '*.rb' \
+            > pr_diff.txt
+
+      # ── Claude API 호출 ─────────────────────────────────────────────────
+      - name: Claude Review
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          python << 'PYEOF'
+          import json, os, urllib.request
+
+          diff = open("pr_diff.txt").read(10000)   # 토큰 절약을 위해 10 KB 제한
+          cov  = open("coverage_output.txt").read(3000) if os.path.exists("coverage_output.txt") else "N/A"
+
+          if not diff.strip():
+              open("review_body.txt", "w").write("변경된 소스 파일이 없어 리뷰를 건너뜁니다.")
+              open("verdict.txt",      "w").write("SKIP")
+              exit()
+
+          prompt = f"""당신은 시니어 코드 리뷰어입니다.
+아래 PR diff와 테스트 커버리지 보고서를 보고 코드 리뷰를 작성하세요.
+
+## PR Diff
+```diff
+{diff}
+```
+
+## Test Coverage
+```
+{cov}
+```
+
+---
+다음 마크다운 형식으로 작성하세요.
+
+### 🔍 코드 리뷰
+
+**테스트 커버리지**: XX% (낮으면 ⚠️ 표시, 80% 미만은 REQUEST_CHANGES 사유)
+
+**이슈 목록** (없으면 "이슈 없음"):
+| 심각도 | 위치 | 내용 |
+|--------|------|------|
+| 높음/중간/낮음 | 파일명:라인번호 | 설명 |
+
+**개선 제안** (선택):
+- ...
+
+**총평**: 한 줄 요약
+
+---
+마지막 줄에 반드시 아래 둘 중 하나만 단독으로 출력하세요.
+VERDICT:APPROVE
+VERDICT:REQUEST_CHANGES
+
+REQUEST_CHANGES 기준: 높음 이슈 존재 OR 커버리지 80% 미만"""
+
+          body = json.dumps({
+              "model": "claude-sonnet-4-6",
+              "max_tokens": 2048,
+              "messages": [{"role": "user", "content": prompt}]
+          }).encode()
+
+          req = urllib.request.Request(
+              "https://api.anthropic.com/v1/messages",
+              data=body,
+              headers={
+                  "x-api-key": os.environ["ANTHROPIC_API_KEY"],
+                  "anthropic-version": "2023-06-01",
+                  "content-type": "application/json",
+              },
+          )
+          with urllib.request.urlopen(req) as r:
+              resp = json.loads(r.read())
+
+          text = resp["content"][0]["text"]
+
+          # verdict 파싱 (마지막 줄 기준)
+          verdict = "APPROVE"
+          for line in reversed(text.splitlines()):
+              if "VERDICT:REQUEST_CHANGES" in line:
+                  verdict = "REQUEST_CHANGES"
+                  break
+              if "VERDICT:APPROVE" in line:
+                  verdict = "APPROVE"
+                  break
+
+          # verdict 줄은 코멘트 본문에서 제거
+          body_text = "\n".join(
+              l for l in text.splitlines() if not l.startswith("VERDICT:")
+          ).strip()
+
+          open("review_body.txt", "w").write(body_text)
+          open("verdict.txt",     "w").write(verdict)
+          print(f"Verdict: {verdict}")
+          PYEOF
+
+      # ── PR 코멘트 작성 ──────────────────────────────────────────────────
+      - name: Post PR comment
+        if: ${{ hashFiles('review_body.txt') != '' }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh pr comment ${{ github.event.pull_request.number }} \
+            --body "$(cat review_body.txt)"
+
+      # ── 자동 Request Changes ────────────────────────────────────────────
+      - name: Request changes if needed
+        if: ${{ hashFiles('verdict.txt') != '' }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERDICT=$(cat verdict.txt)
+          if [ "$VERDICT" = "REQUEST_CHANGES" ]; then
+            gh pr review ${{ github.event.pull_request.number }} \
+              --request-changes \
+              --body "자동 리뷰: 높음 이슈 또는 테스트 커버리지 미달. 위 코멘트를 확인하세요."
+            echo "::warning::Request Changes 제출됨"
+          else
+            echo "이슈 없음 — Request Changes 생략"
+          fi
