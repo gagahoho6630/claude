@@ -1,0 +1,20 @@
+# Python
+__pycache__/
+*.pyc
+
+# 실행 중 생성되는 상태 파일
+_trans_status.json
+
+# 번역 결과물 / 입력 문서 (저작권 자료 — 업로드 금지)
+*_KO.docx
+*_KO.pdf
+*_KO.xlsx
+*_KO_jpg/
+*.docx
+*.doc
+*.pdf
+*.xls
+*.xlsx
+*.jpg
+*.jpeg
+*.png

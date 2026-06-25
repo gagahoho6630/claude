@@ -1,0 +1,162 @@
+﻿<html>
+<head>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<meta http-equiv="X-UA-Compatible" content="IE=edge">
+<title>📄 문서 한글 번역기</title>
+<HTA:APPLICATION ID="app" APPLICATIONNAME="DocTranslator"
+  BORDER="thin" BORDERSTYLE="normal" INNERBORDER="no"
+  MAXIMIZEBUTTON="no" SCROLL="no" SINGLEINSTANCE="yes" />
+<style>
+ *{box-sizing:border-box;font-family:'Segoe UI','맑은 고딕',sans-serif}
+ body{margin:0;background:#0f172a;color:#e2e8f0}
+ .wrap{padding:30px 32px}
+ h1{margin:0 0 6px;font-size:22px}
+ p.sub{margin:0 0 22px;color:#94a3b8;font-size:13px;line-height:1.6}
+ label{display:block;font-size:13px;color:#cbd5e1;margin:14px 0 8px}
+ .row{display:flex;gap:10px}
+ input[type=text]{flex:1;padding:13px;border-radius:9px;border:1px solid #334155;
+      background:#0b1220;color:#e2e8f0;font-size:14px}
+ button{padding:13px 20px;border:0;border-radius:9px;background:#3b82f6;color:#fff;
+        font-size:15px;font-weight:bold;cursor:pointer}
+ button:disabled{background:#475569;cursor:default}
+ .bar{height:12px;background:#0b1220;border-radius:6px;overflow:hidden;margin-top:22px;display:none}
+ .bar>i{display:block;height:100%;width:0;background:#22c55e}
+ #log{margin-top:16px;font-size:13.5px;line-height:1.8;white-space:pre-wrap;word-break:break-all;min-height:48px}
+ .ok{color:#4ade80}.err{color:#f87171}.muted{color:#94a3b8}
+ .steps{margin-top:22px;font-size:12px;color:#64748b;border-top:1px solid #334155;padding-top:14px;line-height:1.8}
+ .fmts{display:flex;gap:8px;flex-wrap:wrap;margin-top:6px}
+ .fmts label{display:inline-flex;align-items:center;gap:6px;margin:0;padding:9px 13px;border:1px solid #334155;
+   border-radius:9px;background:#0b1220;cursor:pointer;font-size:13.5px;color:#e2e8f0}
+ .fmts input{width:15px;height:15px}
+</style>
+</head>
+<body>
+<div class="wrap">
+ <h1>📄 문서 한글 번역기</h1>
+ <p class="sub"><b>doc · docx · pdf · txt · xls · xlsx</b> 또는 <b>웹주소(URL)</b>를 입력하고 <b>번역 시작</b>을 누르면,
+   번역기가 자동 실행되어 한국어로 저장합니다. (문서→_KO.docx, 엑셀→_KO.xlsx 수식 보존)</p>
+
+ <label>📁 문서 경로 또는 🌐 웹주소</label>
+ <div class="row">
+   <input type="text" id="path" value="" placeholder="D:\문서\manual.pdf  또는  https://example.com/article">
+   <button id="go" onclick="start()">번역 시작</button>
+ </div>
+
+ <label>💾 저장 형식 (여러 개 선택 가능)</label>
+ <div class="fmts">
+   <label><input type="checkbox" id="f_docx" checked> DOCX</label>
+   <label><input type="checkbox" id="f_pdf"> PDF</label>
+   <label><input type="checkbox" id="f_jpeg"> JPEG</label>
+   <label><input type="checkbox" id="f_excel"> EXCEL(함수)</label>
+ </div>
+
+ <div class="bar" id="bar"><i id="fill"></i></div>
+ <div id="log"></div>
+
+ <div class="steps">
+   입력: doc·docx·pdf·txt·xls·xlsx · 웹주소(URL) &nbsp;|&nbsp; 엔진: Google(인터넷 필요)<br>
+   저장형식: DOCX · PDF · JPEG · EXCEL(표+자동 SUM) 동시 생성 · 로컬→같은폴더 / URL→프로그램폴더<br>
+   PDF는 회사 DRM 보호 가능, 그 경우 JPEG는 번역 텍스트 이미지로 생성
+ </div>
+</div>
+
+<script language="JScript">
+var oShell = new ActiveXObject('WScript.Shell');
+var fso = new ActiveXObject('Scripting.FileSystemObject');
+var pollTimer = null, statusFile = '', ticks = 0, started = false;
+
+window.onload = function(){
+  window.resizeTo(760, 560);
+  document.getElementById('path').focus();
+};
+
+function log(msg, cls){
+  var el = document.getElementById('log');
+  el.className = cls || '';
+  el.innerText = msg;
+}
+
+function hereDir(){
+  var p = unescape(location.pathname);
+  if(p.charAt(0) == '/') p = p.substr(1);
+  p = p.replace(/\//g, '\\');
+  return fso.GetParentFolderName(p);
+}
+
+function getFormats(){
+  var ids = ['docx', 'pdf', 'jpeg', 'excel'], out = [];
+  for(var i = 0; i < ids.length; i++){
+    if(document.getElementById('f_' + ids[i]).checked) out.push(ids[i]);
+  }
+  return out;
+}
+
+function start(){
+  var input = document.getElementById('path').value;
+  input = input.replace(/^\s+|\s+$/g, '').replace(/^["']+|["']+$/g, '');
+  if(!input){ log('⚠️ 파일 경로 또는 URL을 입력하세요.', 'err'); return; }
+
+  var fmts = getFormats();
+  if(fmts.length == 0){ log('⚠️ 저장 형식을 1개 이상 선택하세요.', 'err'); return; }
+
+  var dir = hereDir();
+  statusFile = dir + '\\_trans_status.json';
+  try{ if(fso.FileExists(statusFile)) fso.DeleteFile(statusFile); }catch(e){}
+
+  document.getElementById('go').disabled = true;
+  document.getElementById('bar').style.display = 'block';
+  document.getElementById('fill').style.width = '0%';
+  log('번역기를 실행하는 중...', 'muted');
+
+  // 숨겨진 콘솔로 파이썬 번역기 실행 (대기하지 않음)
+  var cmd = 'cmd /c cd /d "' + dir + '" & python auto_translator.py --cli "'
+            + input + '" "' + statusFile + '" "' + fmts.join(',') + '"';
+  oShell.Run(cmd, 0, false);
+
+  ticks = 0; started = false;
+  pollTimer = window.setInterval(poll, 600);
+}
+
+function poll(){
+  ticks++;
+  if(!fso.FileExists(statusFile)){
+    if(ticks > 33){  // 약 20초간 상태파일이 없으면 실행 실패로 간주
+      window.clearInterval(pollTimer);
+      document.getElementById('go').disabled = false;
+      log('❌ 번역기를 실행하지 못했습니다.\nPython 이 설치되어 PATH에 등록돼 있는지 확인하세요. (cmd 에서 python --version)', 'err');
+    }
+    return;
+  }
+  started = true;
+  var txt = '';
+  try{
+    var f = fso.OpenTextFile(statusFile, 1);
+    txt = f.ReadAll(); f.Close();
+  }catch(e){ return; }
+  if(!txt) return;
+  var s;
+  try{ s = eval('(' + txt + ')'); }catch(e){ return; }
+
+  var pct = s.total ? Math.round(s.done / s.total * 100) : 0;
+  document.getElementById('fill').style.width = pct + '%';
+
+  if(s.status == 'running'){
+    log(s.stage + ' ... ' + (s.total ? (s.done + ' / ' + s.total + ' 문단 (' + pct + '%)') : ''), 'muted');
+  }else if(s.status == 'done'){
+    window.clearInterval(pollTimer);
+    document.getElementById('go').disabled = false;
+    document.getElementById('fill').style.width = '100%';
+    log('✅ 번역 완료!\n감지된 언어: ' + s.lang + '\n저장 위치:\n' + s.output, 'ok');
+  }else if(s.status == 'error'){
+    window.clearInterval(pollTimer);
+    document.getElementById('go').disabled = false;
+    log('❌ 오류: ' + s.error, 'err');
+  }
+}
+
+document.onkeydown = function(){
+  if(window.event && window.event.keyCode == 13 && !document.getElementById('go').disabled) start();
+};
+</script>
+</body>
+</html>

@@ -1,0 +1,123 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>📄 문서 한글 번역기 (docx)</title>
+<style>
+ *{box-sizing:border-box;font-family:'Segoe UI','맑은 고딕',sans-serif}
+ body{margin:0;min-height:100vh;background:linear-gradient(160deg,#0f172a,#111827);
+      color:#e2e8f0;display:flex;justify-content:center;align-items:flex-start;padding:48px 16px}
+ .card{width:100%;max-width:720px;background:#1e293b;border-radius:18px;padding:36px;
+       box-shadow:0 18px 50px rgba(0,0,0,.45)}
+ h1{margin:0 0 6px;font-size:23px}
+ p.sub{margin:0 0 26px;color:#94a3b8;font-size:14px;line-height:1.6}
+ label{display:block;font-size:13px;color:#cbd5e1;margin:18px 0 8px}
+ .row{display:flex;gap:10px}
+ input[type=text]{flex:1;padding:14px;border-radius:10px;border:1px solid #334155;
+      background:#0f172a;color:#e2e8f0;font-size:14px}
+ input[type=text]:focus{outline:none;border-color:#3b82f6}
+ button{padding:14px 20px;border:0;border-radius:10px;background:#3b82f6;color:#fff;
+        font-size:15px;font-weight:600;cursor:pointer;white-space:nowrap}
+ button:hover{background:#2563eb}
+ button:disabled{background:#475569;cursor:not-allowed}
+ .bar{height:12px;background:#0f172a;border-radius:6px;overflow:hidden;margin-top:24px;display:none}
+ .bar>i{display:block;height:100%;width:0;background:linear-gradient(90deg,#22c55e,#16a34a);
+        transition:width .3s}
+ #log{margin-top:18px;font-size:13.5px;line-height:1.8;white-space:pre-wrap;word-break:break-all}
+ .ok{color:#4ade80}.err{color:#f87171}.muted{color:#94a3b8}
+ .steps{margin-top:26px;font-size:12.5px;color:#64748b;border-top:1px solid #334155;
+        padding-top:16px;line-height:1.9}
+ .steps b{color:#94a3b8}
+ code{background:#0f172a;padding:2px 6px;border-radius:5px;color:#93c5fd}
+ .fmts{display:flex;gap:10px;flex-wrap:wrap;margin-top:6px}
+ .fmts label{display:flex;align-items:center;gap:7px;margin:0;padding:10px 14px;border:1px solid #334155;
+   border-radius:10px;background:#0f172a;cursor:pointer;font-size:14px;color:#e2e8f0;user-select:none}
+ .fmts input{width:16px;height:16px;accent-color:#3b82f6;cursor:pointer}
+ .fmts label.on{border-color:#3b82f6;background:#16233b}
+</style>
+</head>
+<body>
+<div class="card">
+ <h1>📄 문서 한글 번역기</h1>
+ <p class="sub"><b>doc · docx · pdf · txt · xls · xlsx</b> 파일 경로 또는 <b>웹주소(URL)</b>를 입력하면
+   언어를 자동 감지해 <b>한국어</b>로 번역·저장합니다.<br>
+   · 문서/PDF/웹 → <code>_KO.docx</code> (+선택 형식) &nbsp; · 엑셀 → <code>_KO.xlsx</code>(수식·서식 보존)<br>
+   · 로컬 파일은 같은 폴더, 웹주소는 프로그램 폴더에 저장 · 고유명사/약어(AspenTech, PSV)는 원문 유지</p>
+
+ <label>📁 문서 경로 또는 🌐 웹주소</label>
+ <div class="row">
+   <input id="path" type="text" placeholder="예: D:\문서\manual.pdf  또는  https://example.com/article" autofocus>
+   <button id="go" onclick="start()">번역 시작</button>
+ </div>
+
+ <label>💾 저장 형식 (여러 개 선택 가능)</label>
+ <div class="fmts" id="fmts">
+   <label class="on"><input type="checkbox" value="docx" checked> DOCX</label>
+   <label><input type="checkbox" value="pdf"> PDF</label>
+   <label><input type="checkbox" value="jpeg"> JPEG</label>
+   <label><input type="checkbox" value="excel"> EXCEL(함수)</label>
+ </div>
+
+ <div class="bar" id="bar"><i id="fill"></i></div>
+ <div id="log"></div>
+
+ <div class="steps">
+   <b>입력</b> : doc · docx · pdf · txt · xls · xlsx · 웹주소(URL)<br>
+   <b>저장 형식</b> : 문서류→DOCX·PDF·JPEG·EXCEL 동시 선택 / 엑셀입력→번역 XLSX(수식 보존)<br>
+   <b>번역 엔진</b> : Google (인터넷 연결 필요)<br>
+   <b>안내</b> : PDF는 회사 DRM으로 보호될 수 있고, 그 경우 JPEG는 번역 텍스트 이미지로 생성됩니다.
+ </div>
+</div>
+
+<script>
+let timer=null;
+// 파일(file://)로 직접 열려도 동작하도록, 항상 로컬 서버 절대주소로 통신
+const API = (location.protocol==='http:' ? '' : 'http://127.0.0.1:8765');
+function log(msg,cls){document.getElementById('log').innerHTML='<span class="'+(cls||'')+'">'+msg+'</span>';}
+// 체크박스 시각 토글
+document.querySelectorAll('#fmts input').forEach(cb=>{
+  cb.addEventListener('change',()=>cb.parentElement.classList.toggle('on',cb.checked));
+});
+function getFormats(){
+  return Array.from(document.querySelectorAll('#fmts input:checked')).map(c=>c.value);
+}
+async function start(){
+ const path=document.getElementById('path').value.trim();
+ if(!path){log('⚠️ 파일 경로를 입력하세요.','err');return;}
+ const formats=getFormats();
+ if(formats.length===0){log('⚠️ 저장 형식을 1개 이상 선택하세요.','err');return;}
+ const btn=document.getElementById('go');btn.disabled=true;
+ document.getElementById('bar').style.display='block';
+ document.getElementById('fill').style.width='0%';
+ log('작업을 시작합니다...','muted');
+ try{
+   let r=await fetch(API+'/start',{method:'POST',headers:{'Content-Type':'application/json'},
+                               body:JSON.stringify({path,formats})});
+   let j=await r.json();
+   if(j.error){log('오류: '+j.error,'err');btn.disabled=false;return;}
+   const id=j.id;
+   timer=setInterval(async()=>{
+     let s=await(await fetch(API+'/status?id='+id)).json();
+     let pct=s.total?Math.round(s.done/s.total*100):0;
+     document.getElementById('fill').style.width=pct+'%';
+     if(s.status==='running'){
+       log(s.stage+' ... '+(s.total?(s.done+' / '+s.total+' 문단 ('+pct+'%)'):''),'muted');
+     }else if(s.status==='done'){
+       clearInterval(timer);btn.disabled=false;
+       document.getElementById('fill').style.width='100%';
+       log('✅ 번역 완료!\n감지된 언어: '+s.lang+'\n저장 위치:\n'+s.output,'ok');
+     }else if(s.status==='error'){
+       clearInterval(timer);btn.disabled=false;
+       log('❌ 오류: '+s.error,'err');
+     }
+   },600);
+ }catch(e){
+   log('❌ 번역 서버가 실행 중이 아닙니다.\n\n해결: 같은 폴더의 "번역기 실행.bat" 을 먼저 실행하세요.\n(서버 없이 바로 쓰려면 "번역기.hta" 더블클릭)','err');
+   btn.disabled=false;
+ }
+}
+document.getElementById('path').addEventListener('keydown',e=>{if(e.key==='Enter')start();});
+</script>
+</body>
+</html>
